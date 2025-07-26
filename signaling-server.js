@@ -9,7 +9,7 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 server.listen(PORT, () => {
-    console.log(`🚀 Signaling server started on wss://your-app-name.onrender.com`);
+    console.log(`🚀 Signaling server started on port ${PORT}`);
 });
 
 // 👇 остальной твой WebSocket-код без изменений:
