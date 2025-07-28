@@ -12,7 +12,16 @@ server.listen(PORT, () => {
     console.log(`🚀 Signaling server started on port ${PORT}`);
 });
 
-// 👇 остальной твой WebSocket-код без изменений:
+// === ОБРАБОТКА ОШИБОК СЕРВЕРА ===
+server.on("error", (err) => {
+    console.error("❌ Ошибка HTTP сервера:", err);
+});
+
+wss.on("error", (err) => {
+    console.error("❌ Ошибка WebSocket сервера:", err);
+});
+
+// === ЛОГИКА ПОДКЛЮЧЕНИЯ КЛИЕНТОВ ===
 let clients = { caller: null, callee: null };
 
 wss.on("connection", (ws) => {
@@ -20,37 +29,53 @@ wss.on("connection", (ws) => {
     let role = null;
 
     ws.on("message", (message) => {
-        const msg = JSON.parse(message);
-        if (msg.type === "join") {
-            role = msg.from;
-            if (clients[role] && clients[role] !== ws) {
-                console.log(`🔁 Клиент "${role}" переподключён. Закрываю старое соединение.`);
-                clients[role].terminate();
-            }
-            clients[role] = ws;
-            logClients(`🔌 Клиент "${role}" подключён`);
-            return;
-        }
+        try {
+            const msg = JSON.parse(message);
 
-        const targetRole = role === "caller" ? "callee" : "caller";
-        const target = clients[targetRole];
-        if (target && target.readyState === WebSocket.OPEN) {
-            target.send(message);
+            if (msg.type === "join") {
+                role = msg.from;
+
+                if (!["caller", "callee"].includes(role)) {
+                    console.warn(`⚠️ Неизвестная роль: "${role}"`);
+                    return;
+                }
+
+                if (clients[role] && clients[role] !== ws) {
+                    console.log(`🔁 Клиент "${role}" переподключён. Закрываю старое соединение.`);
+                    clients[role].terminate();
+                }
+
+                clients[role] = ws;
+                logClients(`🔌 Клиент "${role}" подключён`);
+                return;
+            }
+
+            // Пересылаем сообщение другому клиенту
+            const targetRole = role === "caller" ? "callee" : "caller";
+            const target = clients[targetRole];
+            if (target && target.readyState === WebSocket.OPEN) {
+                target.send(message);
+            }
+        } catch (err) {
+            console.error("❗ Ошибка при обработке сообщения:", err);
         }
     });
 
     ws.on("pong", () => { ws.isAlive = true; });
+
     ws.on("close", () => {
         if (role && clients[role] === ws) {
             clients[role] = null;
             logClients(`❌ Клиент "${role}" отключён`);
         }
     });
+
     ws.on("error", (err) => {
-        console.error("⚠️ WebSocket ошибка:", err);
+        console.error(`⚠️ Ошибка WebSocket клиента (${role || "неизвестный"}):`, err);
     });
 });
 
+// === ПИНГ КЛИЕНТОВ ===
 const interval = setInterval(() => {
     Object.keys(clients).forEach((role) => {
         const client = clients[role];
@@ -68,6 +93,11 @@ const interval = setInterval(() => {
     });
 }, 10000);
 
+wss.on("close", () => {
+    clearInterval(interval);
+});
+
+// === ЛОГИРОВАНИЕ СОСТОЯНИЯ КЛИЕНТОВ ===
 function logClients(message) {
     const count = Object.values(clients).filter(c => c && c.readyState === WebSocket.OPEN).length;
     console.log(`${message} (${count}/2 подключено)`);
@@ -75,6 +105,3 @@ function logClients(message) {
     else console.log("✅ Оба клиента подключены. Готов к обмену offer/answer.");
 }
 
-wss.on("close", () => {
-    clearInterval(interval);
-});
