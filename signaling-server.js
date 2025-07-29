@@ -47,6 +47,8 @@ wss.on("connection", (ws) => {
 
                 clients[role] = ws;
                 logClients(`🔌 Клиент "${role}" подключён`);
+                // ✅ отправим клиенту подтверждение
+                ws.send(JSON.stringify({ type: "joined", from: role }));
                 return;
             }
 
