@@ -1,109 +1,126 @@
-const express = require("express");
-const http = require("http");
-const WebSocket = require("ws");
+package com.example.signaling
 
-const PORT = process.env.PORT || 8080;
+import android.util.Log
+import okhttp3.*
+import org.json.JSONObject
+import org.webrtc.IceCandidate
+import org.webrtc.SessionDescription
 
-const app = express();
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+class SignalingClient(
+    private val serverUrl: String,
+    private val role: String,
+    private val onOffer: (SessionDescription) -> Unit,
+    private val onAnswer: (SessionDescription) -> Unit,
+    private val onIceCandidate: (IceCandidate) -> Unit,
+    private val onError: (String) -> Unit,
+    private val onConnected: () -> Unit
+) {
+    private val client = OkHttpClient()
+    private var ws: WebSocket? = null
 
-server.listen(PORT, () => {
-    console.log(`🚀 Signaling server started on port ${PORT}`);
-});
+    fun connect() {
+        val request = Request.Builder().url(serverUrl).build()
+        client.newWebSocket(request, object : WebSocketListener() {
 
-// === ОБРАБОТКА ОШИБОК СЕРВЕРА ===
-server.on("error", (err) => {
-    console.error("❌ Ошибка HTTP сервера:", err);
-});
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                Log.d("SignalingClient", "✅ WebSocket открыт")
+                ws = webSocket
 
-wss.on("error", (err) => {
-    console.error("❌ Ошибка WebSocket сервера:", err);
-});
+                val joinMessage = JSONObject().apply {
+                    put("type", "join")
+                    put("from", role)
+                }
+                safeSend(joinMessage)
+                onConnected()
+            }
 
-// === ЛОГИКА ПОДКЛЮЧЕНИЯ КЛИЕНТОВ ===
-let clients = { caller: null, callee: null };
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                val msg = JSONObject(text)
+                when (msg.getString("type")) {
+                    "offer" -> onOffer(
+                        SessionDescription(SessionDescription.Type.OFFER, msg.getString("sdp"))
+                    )
+                    "answer" -> onAnswer(
+                        SessionDescription(SessionDescription.Type.ANSWER, msg.getString("sdp"))
+                    )
+                    "candidate" -> onIceCandidate(
+                        IceCandidate(
+                            msg.getString("sdpMid"),
+                            msg.getInt("sdpMLineIndex"),
+                            msg.getString("candidate")
+                        )
+                    )
+                }
+            }
 
-wss.on("connection", (ws) => {
-    ws.isAlive = true;
-    let role = null;
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                val message = t.message ?: t.toString()
+                Log.e("SignalingClient", "❌ WebSocket ошибка", t)
+                ws = null
+                onError("Ошибка подключения: $message")
+            }
 
-    ws.on("message", (message) => {
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                Log.w("SignalingClient", "🔌 WebSocket закрыт: $reason")
+                ws = null
+                onError("Соединение закрыто: $reason")
+            }
+        })
+    }
+
+    private fun safeSend(json: JSONObject) {
         try {
-            const msg = JSON.parse(message);
-
-            if (msg.type === "join") {
-                role = msg.from;
-
-                if (!["caller", "callee"].includes(role)) {
-                    console.warn(`⚠️ Неизвестная роль: "${role}"`);
-                    return;
+            ws?.let {
+                if (it.send(json.toString())) {
+                    Log.d("SignalingClient", "📤 Отправлено: $json")
+                } else {
+                    onError("❌ Не удалось отправить сообщение: сокет неактивен")
                 }
-
-                if (clients[role] && clients[role] !== ws) {
-                    console.log(`🔁 Клиент "${role}" переподключён. Закрываю старое соединение.`);
-                    clients[role].terminate();
-                }
-
-                clients[role] = ws;
-                logClients(`🔌 Клиент "${role}" подключён`);
-                // ✅ отправим клиенту подтверждение
-                ws.send(JSON.stringify({ type: "joined", from: role }));
-                return;
+            } ?: run {
+                onError("❌ WebSocket не инициализирован")
             }
-
-            // Пересылаем сообщение другому клиенту
-            const targetRole = role === "caller" ? "callee" : "caller";
-            const target = clients[targetRole];
-            if (target && target.readyState === WebSocket.OPEN) {
-                target.send(message);
-            }
-        } catch (err) {
-            console.error("❗ Ошибка при обработке сообщения:", err);
+        } catch (e: Exception) {
+            Log.e("SignalingClient", "❗ Ошибка при отправке: ${e.message}", e)
+            onError("Ошибка при отправке сообщения: ${e.message}")
         }
-    });
+    }
 
-    ws.on("pong", () => { ws.isAlive = true; });
-
-    ws.on("close", () => {
-        if (role && clients[role] === ws) {
-            clients[role] = null;
-            logClients(`❌ Клиент "${role}" отключён`);
+    fun sendOffer(sdp: SessionDescription) {
+        val json = JSONObject().apply {
+            put("type", "offer")
+            put("sdp", sdp.description)
+            put("from", role)
         }
-    });
+        safeSend(json)
+    }
 
-    ws.on("error", (err) => {
-        console.error(`⚠️ Ошибка WebSocket клиента (${role || "неизвестный"}):`, err);
-    });
-});
-
-// === ПИНГ КЛИЕНТОВ ===
-const interval = setInterval(() => {
-    Object.keys(clients).forEach((role) => {
-        const client = clients[role];
-        if (client) {
-            if (!client.isAlive) {
-                console.log(`⛔ Клиент "${role}" не отвечает. Разрываю соединение.`);
-                client.terminate();
-                clients[role] = null;
-                logClients(`❌ Клиент "${role}" отключён из-за неответа`);
-            } else {
-                client.isAlive = false;
-                client.ping();
-            }
+    fun sendAnswer(sdp: SessionDescription) {
+        val json = JSONObject().apply {
+            put("type", "answer")
+            put("sdp", sdp.description)
+            put("from", role)
         }
-    });
-}, 10000);
+        safeSend(json)
+    }
 
-wss.on("close", () => {
-    clearInterval(interval);
-});
+    fun sendIceCandidate(candidate: IceCandidate) {
+        val json = JSONObject().apply {
+            put("type", "candidate")
+            put("sdpMid", candidate.sdpMid)
+            put("sdpMLineIndex", candidate.sdpMLineIndex)
+            put("candidate", candidate.sdp)
+            put("from", role)
+        }
+        safeSend(json)
+    }
 
-// === ЛОГИРОВАНИЕ СОСТОЯНИЯ КЛИЕНТОВ ===
-function logClients(message) {
-    const count = Object.values(clients).filter(c => c && c.readyState === WebSocket.OPEN).length;
-    console.log(`${message} (${count}/2 подключено)`);
-    if (count < 2) console.log("⏳ Ожидаю клиента...");
-    else console.log("✅ Оба клиента подключены. Готов к обмену offer/answer.");
+    fun close() {
+        ws?.let {
+            Log.d("SignalingClient", "🛑 Закрытие WebSocket вручную")
+            it.close(1000, "Client disconnected")
+        } ?: Log.w("SignalingClient", "⚠️ WebSocket уже null при close()")
+        // ⚠️ Не обнуляем сразу — пусть сначала вызовется onClosed()
+    }
 }
+
 
