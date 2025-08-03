@@ -3,6 +3,11 @@ services:
     name: signaling-server
     env: node
     plan: free
-    buildCommand: "npm install"
-    startCommand: "node signaling-server.js"
-    autoDeploy: true
+    region: oregon
+    branch: main
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
