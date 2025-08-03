@@ -8,6 +8,11 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
+// ✅ Добавляем HTTP endpoint
+app.get("/", (req, res) => {
+  res.send("✅ Signaling server is up and running.");
+});
+
 // === ОБРАБОТКА ОШИБОК СЕРВЕРА ===
 server.on("error", (err) => {
     console.error("❌ HTTP server error:", err);
@@ -110,3 +115,7 @@ function logClients(message) {
         console.log("✅ Оба клиента подключены. Можно передавать offer/answer.");
     }
 }
+// === СТАРТ СЕРВЕРА ===
+server.listen(PORT, () => {
+  console.log(`🚀 Signaling server started on port ${PORT}`);
+});
